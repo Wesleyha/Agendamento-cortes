@@ -1,19 +1,15 @@
 <?php
 session_start();
 
-// CONFIGURAÇÃO DO ADMIN
-$admin_user = "admin";
-$admin_pass = "12345"; // você pode mudar depois ou usar variável de ambiente
-
-// BANCO DE DADOS SQLITE
-$db_path = __DIR__ . "/data/agenda.db";
-$db = new PDO("sqlite:" . $db_path);
+// Conexão SQLite
+$db = new PDO("sqlite:agenda.db");
 $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
 
-// Tabelas
+// Criar tabelas se não existirem
 $db->exec("CREATE TABLE IF NOT EXISTS clientes (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    usuario TEXT UNIQUE,
+    nome TEXT,
+    email TEXT UNIQUE,
     senha TEXT,
     telefone TEXT
 )");
@@ -22,171 +18,212 @@ $db->exec("CREATE TABLE IF NOT EXISTS agendamentos (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     cliente_id INTEGER,
     data TEXT,
+    hora TEXT,
     FOREIGN KEY(cliente_id) REFERENCES clientes(id)
 )");
 
-// LOGIN CLIENTE
-if (isset($_POST['login_cliente'])) {
-    $stmt = $db->prepare("SELECT * FROM clientes WHERE usuario=? AND senha=?");
-    $stmt->execute([$_POST['usuario'], $_POST['senha']]);
-    $user = $stmt->fetch();
-    if ($user) {
-        $_SESSION['cliente_id'] = $user['id'];
-        $_SESSION['usuario'] = $user['usuario'];
-    } else {
-        $erro = "Usuário ou senha inválidos.";
-    }
+$db->exec("CREATE TABLE IF NOT EXISTS admin (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    usuario TEXT,
+    senha TEXT
+)");
+
+// Criar admin padrão se não existir
+$stmt = $db->query("SELECT COUNT(*) FROM admin");
+if($stmt->fetchColumn() == 0){
+    $db->exec("INSERT INTO admin (usuario, senha) VALUES ('admin', '12345')");
 }
 
-// CADASTRO CLIENTE
-if (isset($_POST['cadastro_cliente'])) {
-    try {
-        $stmt = $db->prepare("INSERT INTO clientes (usuario, senha, telefone) VALUES (?,?,?)");
-        $stmt->execute([$_POST['usuario'], $_POST['senha'], $_POST['telefone']]);
-        $msg = "Cadastro realizado com sucesso!";
-    } catch (Exception $e) {
-        $erro = "Erro: usuário já existe.";
-    }
+// Funções para login
+function isAdmin(){
+    return isset($_SESSION['admin_usuario']);
+}
+function isCliente(){
+    return isset($_SESSION['cliente_id']);
 }
 
-// LOGIN ADMIN
-if (isset($_POST['login_admin'])) {
-    if ($_POST['usuario'] === $admin_user && $_POST['senha'] === $admin_pass) {
-        $_SESSION['admin'] = true;
-    } else {
-        $erro = "Admin inválido.";
+// Ações de cadastro, login e agendamento
+if(isset($_POST['acao'])){
+    $acao = $_POST['acao'];
+
+    // Cadastro Cliente
+    if($acao == 'cadastrar_cliente'){
+        $nome = $_POST['nome'];
+        $email = $_POST['email'];
+        $senha = password_hash($_POST['senha'], PASSWORD_DEFAULT);
+        $telefone = $_POST['telefone'];
+        $stmt = $db->prepare("INSERT INTO clientes (nome,email,senha,telefone) VALUES (?,?,?,?)");
+        $stmt->execute([$nome,$email,$senha,$telefone]);
+        echo "<script>alert('Cadastro realizado!');</script>";
     }
-}
 
-// AGENDAR CORTE
-if (isset($_POST['agendar']) && isset($_SESSION['cliente_id'])) {
-    $data = $_POST['data'];
-    $stmt = $db->prepare("SELECT COUNT(*) FROM agendamentos WHERE data=?");
-    $stmt->execute([$data]);
-    $quantos = $stmt->fetchColumn();
+    // Login Cliente
+    if($acao == 'login_cliente'){
+        $email = $_POST['email'];
+        $senha = $_POST['senha'];
+        $stmt = $db->prepare("SELECT * FROM clientes WHERE email=?");
+        $stmt->execute([$email]);
+        $cliente = $stmt->fetch(PDO::FETCH_ASSOC);
+        if($cliente && password_verify($senha,$cliente['senha'])){
+            $_SESSION['cliente_id'] = $cliente['id'];
+            $_SESSION['cliente_nome'] = $cliente['nome'];
+        } else {
+            echo "<script>alert('Email ou senha incorretos');</script>";
+        }
+    }
 
-    if ($quantos >= 5) { // limite de 5 pessoas por dia (pode mudar)
-        $erro = "Esse dia já está cheio.";
-    } else {
-        $stmt = $db->prepare("INSERT INTO agendamentos (cliente_id, data) VALUES (?, ?)");
-        $stmt->execute([$_SESSION['cliente_id'], $data]);
-        $msg = "Agendamento realizado com sucesso!";
+    // Login Admin
+    if($acao == 'login_admin'){
+        $usuario = $_POST['usuario'];
+        $senha = $_POST['senha'];
+        $stmt = $db->prepare("SELECT * FROM admin WHERE usuario=? AND senha=?");
+        $stmt->execute([$usuario,$senha]);
+        $admin = $stmt->fetch(PDO::FETCH_ASSOC);
+        if($admin){
+            $_SESSION['admin_usuario'] = $admin['usuario'];
+        } else {
+            echo "<script>alert('Usuário ou senha incorretos');</script>";
+        }
+    }
+
+    // Agendar corte com contagem de pessoas no mesmo dia
+    if($acao == 'agendar' && isCliente()){
+        $data = $_POST['data'];
+        $hora = $_POST['hora'];
+
+        // Contar quantos agendamentos já existem na mesma data
+        $stmt_count = $db->prepare("SELECT COUNT(*) FROM agendamentos WHERE data=?");
+        $stmt_count->execute([$data]);
+        $quantidade = $stmt_count->fetchColumn();
+
+        echo "<script>alert('Já existem $quantidade pessoas agendadas para o dia $data');</script>";
+
+        // Salvar o agendamento
+        $stmt = $db->prepare("INSERT INTO agendamentos (cliente_id,data,hora) VALUES (?,?,?)");
+        $stmt->execute([$_SESSION['cliente_id'],$data,$hora]);
+
+        echo "<script>alert('Agendamento realizado!');</script>";
+    }
+
+    // Logout
+    if($acao == 'logout'){
+        session_destroy();
+        header("Location: index.php");
+        exit;
     }
 }
 ?>
 
 <!DOCTYPE html>
-<html lang="pt-BR">
+<html lang="pt-br">
 <head>
-  <meta charset="UTF-8">
-  <title>Agendamento de Corte</title>
-  <style>
-    body {
-      font-family: Arial, sans-serif;
-      background: #000;
-      color: #fff;
-      margin: 0;
-      padding: 0;
-    }
-    .container {
-      width: 90%;
-      max-width: 900px;
-      margin: auto;
-      padding: 20px;
-    }
-    h2 {
-      border-bottom: 2px solid #fff;
-      padding-bottom: 5px;
-      margin-top: 20px;
-    }
-    form {
-      background: #111;
-      padding: 15px;
-      border-radius: 10px;
-      margin-top: 10px;
-      box-shadow: 0 0 10px #333;
-    }
-    input, button {
-      display: block;
-      width: 100%;
-      margin: 8px 0;
-      padding: 10px;
-      border: none;
-      border-radius: 5px;
-    }
-    input {
-      background: #222;
-      color: #fff;
-    }
-    button {
-      background: #444;
-      color: #fff;
-      cursor: pointer;
-      font-weight: bold;
-    }
-    button:hover {
-      background: #666;
-    }
-    .msg { color: lightgreen; margin: 10px 0; }
-    .erro { color: red; margin: 10px 0; }
-  </style>
+<meta charset="UTF-8">
+<title>Agendamento Longuinho</title>
+<style>
+body { background:#000; color:#fff; font-family:Arial, sans-serif; text-align:center; padding:20px;}
+h1,h2 { margin:20px;}
+input, select { padding:10px; margin:5px; width:200px;}
+button { padding:10px 20px; margin:5px; cursor:pointer;}
+a { color:#fff; text-decoration:none; margin:5px; display:inline-block;}
+.container { max-width:400px; margin:auto; }
+table { width:100%; border-collapse: collapse; margin-top:20px;}
+th, td { border:1px solid #fff; padding:8px;}
+th { background:#333;}
+</style>
 </head>
 <body>
-  <div class="container">
-    <h1>💈 Sistema de Agendamento</h1>
+<div class="container">
+<h1>Agendamento Longuinho</h1>
 
-    <?php if (isset($msg)) echo "<p class='msg'>$msg</p>"; ?>
-    <?php if (isset($erro)) echo "<p class='erro'>$erro</p>"; ?>
-
-    <!-- Login Cliente -->
-    <h2>Login do Cliente</h2>
-    <form method="post">
-      <input type="text" name="usuario" placeholder="Usuário" required>
-      <input type="password" name="senha" placeholder="Senha" required>
-      <button type="submit" name="login_cliente">Entrar</button>
-    </form>
+<?php if(!isCliente() && !isAdmin()): ?>
+    <!-- Página inicial -->
+    <a href="#login_cliente">Longuinho do Cliente</a> | 
+    <a href="#login_admin">Longuinho do Admin</a> | 
+    <a href="#cadastro">Cadastrar Cliente</a>
 
     <!-- Cadastro Cliente -->
-    <h2>Cadastro Cliente</h2>
-    <form method="post">
-      <input type="text" name="usuario" placeholder="Usuário" required>
-      <input type="password" name="senha" placeholder="Senha" required>
-      <input type="text" name="telefone" placeholder="Telefone" required>
-      <button type="submit" name="cadastro_cliente">Cadastrar</button>
-    </form>
+    <div id="cadastro">
+        <h2>Cadastro Cliente</h2>
+        <form method="post">
+            <input type="hidden" name="acao" value="cadastrar_cliente">
+            <input type="text" name="nome" placeholder="Nome" required><br>
+            <input type="email" name="email" placeholder="Email" required><br>
+            <input type="password" name="senha" placeholder="Senha" required><br>
+            <input type="text" name="telefone" placeholder="Telefone" required><br>
+            <button type="submit">Cadastrar</button>
+        </form>
+    </div>
+
+    <!-- Login Cliente -->
+    <div id="login_cliente">
+        <h2>Login Cliente</h2>
+        <form method="post">
+            <input type="hidden" name="acao" value="login_cliente">
+            <input type="email" name="email" placeholder="Email" required><br>
+            <input type="password" name="senha" placeholder="Senha" required><br>
+            <button type="submit">Entrar</button>
+        </form>
+    </div>
 
     <!-- Login Admin -->
-    <h2>Admin</h2>
+    <div id="login_admin">
+        <h2>Login Admin</h2>
+        <form method="post">
+            <input type="hidden" name="acao" value="login_admin">
+            <input type="text" name="usuario" placeholder="Usuário" required><br>
+            <input type="password" name="senha" placeholder="Senha" required><br>
+            <button type="submit">Entrar</button>
+        </form>
+    </div>
+
+<?php elseif(isCliente()): ?>
+    <!-- Dashboard Cliente -->
+    <h2>Bem-vindo, <?php echo $_SESSION['cliente_nome']; ?></h2>
     <form method="post">
-      <input type="text" name="usuario" placeholder="Login" required>
-      <input type="password" name="senha" placeholder="Senha" required>
-      <button type="submit" name="login_admin">Entrar</button>
+        <input type="hidden" name="acao" value="logout">
+        <button type="submit">Sair</button>
     </form>
 
-    <?php
-    // Cliente logado
-    if (isset($_SESSION['cliente_id'])) {
-        echo "<h2>Bem-vindo, ".htmlspecialchars($_SESSION['usuario'])."</h2>";
-        echo '<form method="post">
-                <input type="date" name="data" required>
-                <button type="submit" name="agendar">Agendar Corte</button>
-              </form>';
-    }
+    <h3>Agendar Corte</h3>
+    <form method="post">
+        <input type="hidden" name="acao" value="agendar">
+        <input type="date" name="data" required><br>
+        <input type="time" name="hora" required><br>
+        <button type="submit">Agendar</button>
+    </form>
 
-    // Admin logado
-    if (isset($_SESSION['admin'])) {
-        echo "<h2>Painel do Admin</h2>";
-        $res = $db->query("SELECT a.id, c.usuario, c.telefone, a.data 
-                           FROM agendamentos a 
-                           JOIN clientes c ON a.cliente_id=c.id 
-                           ORDER BY a.data");
-        echo "<ul>";
-        foreach ($res as $row) {
-            echo "<li>".htmlspecialchars($row['data'])." - ".htmlspecialchars($row['usuario'])." (".htmlspecialchars($row['telefone']).")</li>";
+    <h3>Seus Agendamentos</h3>
+    <table>
+        <tr><th>Data</th><th>Hora</th></tr>
+        <?php
+        $stmt = $db->prepare("SELECT * FROM agendamentos WHERE cliente_id=? ORDER BY data,hora");
+        $stmt->execute([$_SESSION['cliente_id']]);
+        while($row = $stmt->fetch(PDO::FETCH_ASSOC)){
+            echo "<tr><td>{$row['data']}</td><td>{$row['hora']}</td></tr>";
         }
-        echo "</ul>";
-    }
-    ?>
-  </div>
+        ?>
+    </table>
+
+<?php elseif(isAdmin()): ?>
+    <!-- Dashboard Admin -->
+    <h2>Painel do Cabeleireiro (Admin)</h2>
+    <form method="post">
+        <input type="hidden" name="acao" value="logout">
+        <button type="submit">Sair</button>
+    </form>
+
+    <h3>Agendamentos</h3>
+    <table>
+        <tr><th>Cliente</th><th>Telefone</th><th>Data</th><th>Hora</th></tr>
+        <?php
+        $stmt = $db->query("SELECT a.data,a.hora,c.nome,c.telefone FROM agendamentos a JOIN clientes c ON a.cliente_id=c.id ORDER BY a.data,a.hora");
+        while($row = $stmt->fetch(PDO::FETCH_ASSOC)){
+            echo "<tr><td>{$row['nome']}</td><td>{$row['telefone']}</td><td>{$row['data']}</td><td>{$row['hora']}</td></tr>";
+        }
+        ?>
+    </table>
+<?php endif; ?>
+
+</div>
 </body>
 </html>
